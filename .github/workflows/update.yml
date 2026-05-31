@@ -1,0 +1,171 @@
+name: QQ NT Auto Update
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 * * * *'
+
+concurrency:
+  group: qq-nt-update
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: Check Version
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm-slim
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      needs_update: ${{ steps.check.outputs.needs_update }}
+      new_version: ${{ steps.check.outputs.new_version }}
+      download_url: ${{ steps.check.outputs.download_url }}
+    steps:
+      - name: Install dependencies
+        run: apt-get update && apt-get install -y --no-install-recommends git curl jq dnsutils ca-certificates
+
+      - name: Checkout Scoop-Bucket
+        uses: actions/checkout@v5
+        with:
+          repository: Exlei/Scoop-Bucket
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Compare Versions
+        id: check
+        run: |
+          set -euo pipefail
+
+          MANIFEST="bucket/Tencent.QQ.NT.json"
+          CURRENT_VERSION=$(jq -r '.version' "$MANIFEST")
+          CURRENT_URL=$(jq -r '.architecture."64bit".url' "$MANIFEST" | sed 's|#/dl\.7z$||')
+          echo "Current version: $CURRENT_VERSION"
+          echo "Current URL: $CURRENT_URL"
+
+          CDN_HOST="cdn-go.cn"
+          IP=$(dig +short cdn-go.cn.cloud.tc.qq.com A 2>/dev/null | head -1)
+
+          if [[ -n "$IP" ]]; then
+              CONTENT=$(curl -fsSL -H "Host: $CDN_HOST" "https://$IP/qq-web/im.qq.com_new/latest/rainbow/windowsConfig.js")
+          else
+              CONTENT=$(curl -fsSL "https://$CDN_HOST/qq-web/im.qq.com_new/latest/rainbow/windowsConfig.js")
+          fi
+
+          JSON_STR=$(echo "$CONTENT" | sed -n 's/.*var params\s*=\s*\({.*}\)\s*;.*/\1/p')
+          if [[ -z "$JSON_STR" ]]; then
+              echo "::error::Failed to parse CDN config"
+              exit 1
+          fi
+
+          DOWNLOAD_URL=$(echo "$JSON_STR" | jq -r '.ntDownloadX64Url')
+          if [[ -z "$DOWNLOAD_URL" || "$DOWNLOAD_URL" == "null" ]]; then
+              echo "::error::No x64 download URL found"
+              exit 1
+          fi
+          echo "Latest download URL: $DOWNLOAD_URL"
+
+          if [[ "$DOWNLOAD_URL" =~ QQ_([0-9.]+)_([0-9]+)_x64_01\.exe ]]; then
+              NEW_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          else
+              echo "::error::Failed to parse version from URL: $DOWNLOAD_URL"
+              exit 1
+          fi
+          echo "Latest version: $NEW_VERSION"
+
+          if [[ "$NEW_VERSION" == "$CURRENT_VERSION" && "$DOWNLOAD_URL" == "$CURRENT_URL" ]]; then
+              echo "QQ NT is already up to date (version and URL unchanged)"
+              echo "needs_update=false" >> "$GITHUB_OUTPUT"
+          else
+              echo "Update available: $CURRENT_VERSION -> $NEW_VERSION"
+              echo "needs_update=true" >> "$GITHUB_OUTPUT"
+              echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+              echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+          fi
+
+  update:
+    name: Update Manifest
+    runs-on: ubuntu-latest
+    container:
+      image: debian:bookworm-slim
+    defaults:
+      run:
+        shell: bash
+    needs: check
+    if: needs.check.outputs.needs_update == 'true'
+    steps:
+      - name: Install dependencies
+        run: apt-get update && apt-get install -y --no-install-recommends git curl jq dnsutils ca-certificates dos2unix
+
+      - name: Checkout Scoop-Bucket
+        uses: actions/checkout@v5
+        with:
+          repository: Exlei/Scoop-Bucket
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Download and Update
+        run: |
+          set -euo pipefail
+
+          NEW_VERSION="${{ needs.check.outputs.new_version }}"
+          DOWNLOAD_URL="${{ needs.check.outputs.download_url }}"
+          SCOOP_URL="${DOWNLOAD_URL}#/dl.7z"
+          MANIFEST="bucket/Tencent.QQ.NT.json"
+
+          echo "Updating to version: $NEW_VERSION"
+
+          TEMP_FILE=$(mktemp)
+          echo "Downloading installer for hash calculation..."
+          curl -fsSL -o "$TEMP_FILE" "$DOWNLOAD_URL"
+
+          HASH=$(sha256sum "$TEMP_FILE" | awk '{print $1}')
+          echo "SHA256: $HASH"
+          rm -f "$TEMP_FILE"
+
+          dos2unix "$MANIFEST"
+
+          sed -E -i "s/\"version\": \"[^\"]+\"/\"version\": \"${NEW_VERSION}\"/" "$MANIFEST"
+          sed -E -i "s|\"url\": \"https://qqdl\.gtimg\.cn/qqfile/QQNT/[0-9][^\"]+\"|\"url\": \"${SCOOP_URL}\"|" "$MANIFEST"
+          sed -E -i "s/\"hash\": \"[a-f0-9]{64}\"/\"hash\": \"${HASH}\"/" "$MANIFEST"
+
+          unix2dos "$MANIFEST"
+
+          UPDATED_VERSION=$(jq -r '.version' "$MANIFEST")
+          UPDATED_URL=$(jq -r '.architecture."64bit".url' "$MANIFEST")
+          UPDATED_HASH=$(jq -r '.architecture."64bit".hash' "$MANIFEST")
+
+          if [[ "$UPDATED_VERSION" != "$NEW_VERSION" ]]; then
+              echo "::error::Version mismatch: expected $NEW_VERSION, got $UPDATED_VERSION"
+              exit 1
+          fi
+          if [[ "$UPDATED_URL" != "$SCOOP_URL" ]]; then
+              echo "::error::URL mismatch: expected $SCOOP_URL, got $UPDATED_URL"
+              exit 1
+          fi
+          if [[ "$UPDATED_HASH" != "$HASH" ]]; then
+              echo "::error::Hash mismatch: expected $HASH, got $UPDATED_HASH"
+              exit 1
+          fi
+
+          echo "Manifest updated and verified successfully"
+
+      - name: Commit and Push
+        run: |
+          set -euo pipefail
+
+          MANIFEST="bucket/Tencent.QQ.NT.json"
+          VERSION=$(jq -r '.version' "$MANIFEST")
+
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add "$MANIFEST"
+          if ! git diff --cached --quiet; then
+              git commit -m "更新 QQ NT 至 $VERSION"
+              git push
+              echo "Pushed update for QQ NT $VERSION"
+          else
+              echo "No changes to commit"
+          fi
