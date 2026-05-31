@@ -47,7 +47,7 @@ jobs:
           echo "Current URL: $CURRENT_URL"
 
           CDN_URL="https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/windowsConfig.js"
-          IP=$(dig +short cdn-go.cn.cloud.tc.qq.com A 2>/dev/null | head -1)
+          IP=$(dig +short cdn-go.cn.cloud.tc.qq.com A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
 
           CURL_ARGS=(-fsSL)
           if [[ -n "$IP" ]]; then
