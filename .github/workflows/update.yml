@@ -3,7 +3,7 @@ name: QQ NT Auto Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: '*/3 * * * *'
+    - cron: '*/5 * * * *'
 
 concurrency:
   group: qq-nt-update
