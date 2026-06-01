@@ -120,7 +120,6 @@ jobs:
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
           echo "installer_path=$INSTALLER_PATH" >> "$GITHUB_OUTPUT"
-          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         if: steps.check.outputs.needs_update == 'true'
@@ -132,62 +131,3 @@ jobs:
           bodyFile: build/releaseNote.md
           immutableCreate: true
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Checkout Scoop-Bucket
-        if: steps.check.outputs.needs_update == 'true'
-        uses: actions/checkout@v5
-        with:
-          repository: Exlei/Scoop-Bucket
-          token: ${{ secrets.PAT_TOKEN }}
-          path: scoop-bucket
-
-      - name: Update Scoop-Bucket manifest
-        if: steps.check.outputs.needs_update == 'true'
-        run: |
-          set -euo pipefail
-
-          NEW_VERSION="${{ steps.download.outputs.version }}"
-          DOWNLOAD_URL="${{ steps.download.outputs.download_url }}"
-          HASH="${{ steps.download.outputs.sha256 }}"
-          SCOOP_URL="${DOWNLOAD_URL}#/dl.7z"
-          MANIFEST="scoop-bucket/bucket/Tencent.QQ.NT.json"
-
-          apt-get update && apt-get install -y --no-install-recommends dos2unix
-
-          dos2unix "$MANIFEST"
-
-          sed -E -i "s/\"version\": \"[^\"]+\"/\"version\": \"${NEW_VERSION}\"/" "$MANIFEST"
-          sed -E -i "s|\"url\": \"https://qqdl\.gtimg\.cn/qqfile/QQNT/[0-9][^\"]+\"|\"url\": \"${SCOOP_URL}\"|" "$MANIFEST"
-          sed -E -i "s/\"hash\": \"[a-f0-9]{64}\"/\"hash\": \"${HASH}\"/" "$MANIFEST"
-
-          unix2dos "$MANIFEST"
-
-          UPDATED_VERSION=$(jq -r '.version' "$MANIFEST")
-          UPDATED_URL=$(jq -r '.architecture."64bit".url' "$MANIFEST")
-          UPDATED_HASH=$(jq -r '.architecture."64bit".hash' "$MANIFEST")
-
-          if [[ "$UPDATED_VERSION" != "$NEW_VERSION" ]]; then
-              echo "::error::Version mismatch: expected $NEW_VERSION, got $UPDATED_VERSION"
-              exit 1
-          fi
-          if [[ "$UPDATED_URL" != "$SCOOP_URL" ]]; then
-              echo "::error::URL mismatch: expected $SCOOP_URL, got $UPDATED_URL"
-              exit 1
-          fi
-          if [[ "$UPDATED_HASH" != "$HASH" ]]; then
-              echo "::error::Hash mismatch: expected $HASH, got $UPDATED_HASH"
-              exit 1
-          fi
-
-          cd scoop-bucket
-          git config --global --add safe.directory '*'
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add "bucket/Tencent.QQ.NT.json"
-          if ! git diff --cached --quiet; then
-              git commit -m "更新 QQ NT 至 $NEW_VERSION"
-              git push
-              echo "Pushed update for QQ NT $NEW_VERSION to Scoop-Bucket"
-          else
-              echo "No changes to commit in Scoop-Bucket"
-          fi
