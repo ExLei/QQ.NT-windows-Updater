@@ -3,7 +3,7 @@ name: QQ NT Auto Update
 on:
   workflow_dispatch:
   schedule:
-    - cron: '41 * * * *'
+    - cron: '*/3 * * * *'
 
 concurrency:
   group: qq-nt-update
@@ -16,14 +16,9 @@ jobs:
   update:
     name: Check and Update
     runs-on: ubuntu-latest
-    container:
-      image: debian:bookworm-slim
-    defaults:
-      run:
-        shell: bash
     steps:
       - name: Install dependencies
-        run: apt-get update && apt-get install -y --no-install-recommends git curl jq dnsutils ca-certificates
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends jq dnsutils
 
       - name: Checkout this repo
         uses: actions/checkout@v5
