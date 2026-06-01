@@ -173,7 +173,7 @@ jobs:
 
       - name: Create Release
         if: steps.check.outputs.needs_update == 'true'
-        uses: ncipollo/release-action@440c8cbbcb756b4f0e6c52e7b469b9e3fcbcc5d9 # v1.18.0
+        uses: ncipollo/release-action@v1.21.0
         with:
           tag: v${{ steps.update.outputs.version }}
           name: QQ Windows Version ${{ steps.update.outputs.version }}
