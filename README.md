@@ -71,10 +71,6 @@ scoop install exlei/Tencent.QQ.NT
 
 可基于本仓库的 Release 信息创建 Winget 清单，参考 [Winget 包规范](https://learn.microsoft.com/en-us/windows/package-manager/package/)。
 
-## 相关项目
-
-- [cscnk52/wechat-windows-versions](https://github.com/cscnk52/wechat-windows-versions) — 微信 Windows 版本追踪（灵感来源）
-
 ## 免责声明
 
 本项目仅用于版本追踪和校验，安装包版权归腾讯所有。所有安装包均从腾讯官方 CDN 下载，未做任何修改。
