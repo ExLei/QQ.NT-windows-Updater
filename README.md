@@ -1,8 +1,5 @@
 # QQ NT Windows Versions
 
-[![Release](https://github.com/ExLei/QQ.NT-windows-Updater/actions/workflows/update.yml/badge.svg)](https://github.com/ExLei/QQ.NT-windows-Updater/actions/workflows/update.yml)
-![GitHub Downloads (all assets, all releases)](https://img.shields.io/github/downloads/ExLei/QQ.NT-windows-Updater/total)
-
 自动追踪 [QQ NT (Windows)](https://im.qq.com/) 安装包版本，通过 GitHub Actions 每小时检查更新，自动发布 Release。
 
 本仓库为通用版本追踪仓库，提供安装包、多格式哈希值、结构化元数据，可供任何包管理器（Scoop、Winget、Chocolatey 等）或自动化工具使用。
