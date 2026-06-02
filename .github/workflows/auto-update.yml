@@ -3,7 +3,7 @@ name: QQ NT Version Tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: '41 * * * *'
+    - cron: '*/5 * * * *'
 
 concurrency:
   group: qq-nt-update
