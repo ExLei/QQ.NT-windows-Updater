@@ -48,17 +48,23 @@ jobs:
               exit 1
           fi
 
-          DOWNLOAD_URL=$(echo "$JSON_STR" | jq -r '.ntDownloadX64Url')
-          if [[ -z "$DOWNLOAD_URL" || "$DOWNLOAD_URL" == "null" ]]; then
+          # 提取三架构下载 URL
+          X64_URL=$(echo "$JSON_STR" | jq -r '.ntDownloadX64Url')
+          X86_URL=$(echo "$JSON_STR" | jq -r '.ntDownloadX86Url')
+          ARM64_URL=$(echo "$JSON_STR" | jq -r '.ntDownloadArm64Url')
+
+          if [[ -z "$X64_URL" || "$X64_URL" == "null" ]]; then
               echo "::error::No x64 download URL found"
               exit 1
           fi
-          echo "Latest download URL: $DOWNLOAD_URL"
+          echo "x64 URL: $X64_URL"
+          echo "x86 URL: ${X86_URL:-N/A}"
+          echo "arm64 URL: ${ARM64_URL:-N/A}"
 
-          if [[ "$DOWNLOAD_URL" =~ QQ_([0-9.]+)_([0-9]+)_x64_01\.exe ]]; then
+          if [[ "$X64_URL" =~ QQ_([0-9.]+)_([0-9]+)_x64_01\.exe ]]; then
               NEW_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
           else
-              echo "::error::Failed to parse version from URL: $DOWNLOAD_URL"
+              echo "::error::Failed to parse version from URL: $X64_URL"
               exit 1
           fi
           echo "Latest version: $NEW_VERSION"
@@ -79,103 +85,141 @@ jobs:
               echo "Update available: ${CURRENT_VERSION:-none} -> $NEW_VERSION"
               echo "needs_update=true" >> "$GITHUB_OUTPUT"
               echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-              echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+              echo "x64_url=$X64_URL" >> "$GITHUB_OUTPUT"
+              echo "x86_url=$X86_URL" >> "$GITHUB_OUTPUT"
+              echo "arm64_url=$ARM64_URL" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download installer and generate artifacts
+      - name: Download installers and generate artifacts
         if: steps.check.outputs.needs_update == 'true'
         id: download
         run: |
           set -euo pipefail
 
           NEW_VERSION="${{ steps.check.outputs.new_version }}"
-          DOWNLOAD_URL="${{ steps.check.outputs.download_url }}"
+          X64_URL="${{ steps.check.outputs.x64_url }}"
+          X86_URL="${{ steps.check.outputs.x86_url }}"
+          ARM64_URL="${{ steps.check.outputs.arm64_url }}"
 
           mkdir -p build
-          INSTALLER_NAME="QQ_${NEW_VERSION}_x64.exe"
-          INSTALLER_PATH="build/${INSTALLER_NAME}"
+          ARTIFACTS=()
+          METADATA_ENTRIES=()
 
-          echo "Downloading QQ NT $NEW_VERSION ..."
-          curl -fsSL -o "$INSTALLER_PATH" "$DOWNLOAD_URL"
+          # 定义架构列表
+          declare -A ARCH_URLS=(
+            ["x64"]="$X64_URL"
+            ["x86"]="$X86_URL"
+            ["arm64"]="$ARM64_URL"
+          )
 
-          FILE_SIZE=$(stat -c%s "$INSTALLER_PATH")
+          for ARCH in x64 x86 arm64; do
+            URL="${ARCH_URLS[$ARCH]}"
+            if [[ -z "$URL" || "$URL" == "null" || "$URL" == "" ]]; then
+              echo "Skipping $ARCH: no download URL available"
+              continue
+            fi
 
-          SHA256=$(sha256sum "$INSTALLER_PATH" | awk '{print $1}')
-          SHA1=$(sha1sum "$INSTALLER_PATH" | awk '{print $1}')
-          MD5=$(md5sum "$INSTALLER_PATH" | awk '{print $1}')
+            INSTALLER_NAME="QQ_${NEW_VERSION}_${ARCH}.exe"
+            INSTALLER_PATH="build/${INSTALLER_NAME}"
 
-          echo "SHA256: $SHA256"
-          echo "SHA1:   $SHA1"
-          echo "MD5:    $MD5"
+            echo "Downloading QQ NT $NEW_VERSION ($ARCH) ..."
+            if ! curl -fsSL -o "$INSTALLER_PATH" "$URL"; then
+              echo "::warning::Failed to download $ARCH installer, skipping"
+              rm -f "$INSTALLER_PATH"
+              continue
+            fi
 
-          echo "${SHA256}  ${INSTALLER_NAME}" > "${INSTALLER_PATH}.sha256"
-          echo "${SHA1}  ${INSTALLER_NAME}" > "${INSTALLER_PATH}.sha1"
-          echo "${MD5}  ${INSTALLER_NAME}" > "${INSTALLER_PATH}.md5"
+            FILE_SIZE=$(stat -c%s "$INSTALLER_PATH")
+            SHA256=$(sha256sum "$INSTALLER_PATH" | awk '{print $1}')
+            SHA1=$(sha1sum "$INSTALLER_PATH" | awk '{print $1}')
+            MD5=$(md5sum "$INSTALLER_PATH" | awk '{print $1}')
 
-          LAST_MODIFIED=$(curl -fsSL -I "$DOWNLOAD_URL" | grep -i '^last-modified:' | sed 's/^last-modified: //i' | tr -d '\r')
+            echo "$ARCH SHA256: $SHA256"
 
+            echo "${SHA256}  ${INSTALLER_NAME}" > "${INSTALLER_PATH}.sha256"
+            echo "${SHA1}  ${INSTALLER_NAME}" > "${INSTALLER_PATH}.sha1"
+            echo "${MD5}  ${INSTALLER_NAME}" > "${INSTALLER_PATH}.md5"
+
+            ARTIFACTS+=("${INSTALLER_PATH},${INSTALLER_PATH}.sha256,${INSTALLER_PATH}.sha1,${INSTALLER_PATH}.md5")
+
+            LAST_MODIFIED=$(curl -fsSL -I "$URL" | grep -i '^last-modified:' | sed 's/^last-modified: //i' | tr -d '\r')
+
+            METADATA_ENTRIES+=($(jq -n \
+              --arg arch "$ARCH" \
+              --arg url "$URL" \
+              --arg sha256 "$SHA256" \
+              --arg sha1 "$SHA1" \
+              --arg md5 "$MD5" \
+              --argjson size "$FILE_SIZE" \
+              --arg last_modified "$LAST_MODIFIED" \
+              --arg filename "$INSTALLER_NAME" \
+              '{arch: $arch, url: $url, filename: $filename, size: $size, hashes: {sha256: $sha256, sha1: $sha1, md5: $md5}, last_modified: $last_modified}'))
+          done
+
+          # 生成 metadata.json
           jq -n \
             --arg version "$NEW_VERSION" \
-            --arg url "$DOWNLOAD_URL" \
-            --arg sha256 "$SHA256" \
-            --arg sha1 "$SHA1" \
-            --arg md5 "$MD5" \
-            --argjson size "$FILE_SIZE" \
-            --arg last_modified "$LAST_MODIFIED" \
-            --arg filename "$INSTALLER_NAME" \
-            '{
-              version: $version,
-              url: $url,
-              filename: $filename,
-              size: $size,
-              hashes: {
-                sha256: $sha256,
-                sha1: $sha1,
-                md5: $md5
-              },
-              last_modified: $last_modified
-            }' > build/metadata.json
+            --argjson entries "$(printf '%s\n' "${METADATA_ENTRIES[@]}" | jq -s '.')" \
+            '{version: $version, architectures: $entries}' > build/metadata.json
 
+          # 生成 releaseNote.md
           cat > build/releaseNote.md << 'NOTEEOF'
           | Field | Value |
           |-------|-------|
           | Version | __VERSION__ |
-          | Download URL | __URL__ |
-          | File Size | __SIZE__ |
-          | Last Modified | __LASTMOD__ |
 
-          ## Hashes
+          ## Architectures
 
-          | Algorithm | Value |
-          |-----------|-------|
-          | SHA256 | __SHA256__ |
-          | SHA1 | __SHA1__ |
-          | MD5 | __MD5__ |
+          NOTEEOF
+
+          sed -i "s|__VERSION__|${NEW_VERSION}|g" build/releaseNote.md
+
+          # 为每个架构添加表格
+          for ARCH in x64 x86 arm64; do
+            URL="${ARCH_URLS[$ARCH]}"
+            if [[ -z "$URL" || "$URL" == "null" || "$URL" == "" ]]; then
+              continue
+            fi
+            INSTALLER_NAME="QQ_${NEW_VERSION}_${ARCH}.exe"
+            INSTALLER_PATH="build/${INSTALLER_NAME}"
+            if [[ ! -f "$INSTALLER_PATH" ]]; then
+              continue
+            fi
+            FILE_SIZE=$(stat -c%s "$INSTALLER_PATH")
+            SHA256=$(sha256sum "$INSTALLER_PATH" | awk '{print $1}')
+            SHA1=$(sha1sum "$INSTALLER_PATH" | awk '{print $1}')
+            MD5=$(md5sum "$INSTALLER_PATH" | awk '{print $1}')
+
+            cat >> build/releaseNote.md << EOF
+          ### ${ARCH}
+
+          | Field | Value |
+          |-------|-------|
+          | Download URL | ${URL} |
+          | File Size | $(( FILE_SIZE / 1024 / 1024 )) MB (${FILE_SIZE} bytes) |
+          | SHA256 | ${SHA256} |
+          | SHA1 | ${SHA1} |
+          | MD5 | ${MD5} |
 
           ## Assets
 
           | File | Description |
           |------|-------------|
-          | `__FILENAME__` | QQ NT 安装包 |
-          | `__FILENAME__.sha256` | SHA256 校验文件 |
-          | `__FILENAME__.sha1` | SHA1 校验文件 |
-          | `__FILENAME__.md5` | MD5 校验文件 |
-          | `metadata.json` | 结构化元数据（JSON） |
-          NOTEEOF
+          | \`${INSTALLER_NAME}\` | QQ NT ${ARCH} 安装包 |
+          | \`${INSTALLER_NAME}.sha256\` | SHA256 校验文件 |
+          | \`${INSTALLER_NAME}.sha1\` | SHA1 校验文件 |
+          | \`${INSTALLER_NAME}.md5\` | MD5 校验文件 |
+          | \`metadata.json\` | 结构化元数据（JSON） |
 
-          sed -i "s|__VERSION__|${NEW_VERSION}|g" build/releaseNote.md
-          sed -i "s|__URL__|${DOWNLOAD_URL}|g" build/releaseNote.md
-          sed -i "s|__SHA256__|${SHA256}|g" build/releaseNote.md
-          sed -i "s|__SHA1__|${SHA1}|g" build/releaseNote.md
-          sed -i "s|__MD5__|${MD5}|g" build/releaseNote.md
-          sed -i "s|__SIZE__|$(( FILE_SIZE / 1024 / 1024 )) MB (${FILE_SIZE} bytes)|g" build/releaseNote.md
-          sed -i "s|__LASTMOD__|${LAST_MODIFIED}|g" build/releaseNote.md
-          sed -i "s|__FILENAME__|${INSTALLER_NAME}|g" build/releaseNote.md
+          EOF
+          done
+
           sed -i 's/^          //' build/releaseNote.md
 
+          # 合并 artifacts 列表
+          ALL_ARTIFACTS=$(IFS=,; echo "${ARTIFACTS[*]}" | tr ',' '\n' | sort -u | tr '\n' ',' | sed 's/,$//')
+          echo "artifacts=$ALL_ARTIFACTS" >> "$GITHUB_OUTPUT"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
-          echo "installer_path=$INSTALLER_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Create Release
         if: steps.check.outputs.needs_update == 'true'
@@ -183,7 +227,7 @@ jobs:
         with:
           tag: v${{ steps.download.outputs.version }}
           name: QQ Windows Version ${{ steps.download.outputs.version }}
-          artifacts: build/QQ_${{ steps.download.outputs.version }}_x64.exe,build/QQ_${{ steps.download.outputs.version }}_x64.exe.sha256,build/QQ_${{ steps.download.outputs.version }}_x64.exe.sha1,build/QQ_${{ steps.download.outputs.version }}_x64.exe.md5,build/metadata.json
+          artifacts: ${{ steps.download.outputs.artifacts }}
           bodyFile: build/releaseNote.md
           immutableCreate: true
           token: ${{ secrets.GITHUB_TOKEN }}
