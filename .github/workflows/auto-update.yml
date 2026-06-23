@@ -33,14 +33,47 @@ jobs:
           git config --global --add safe.directory '*'
 
           CDN_URL="https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/windowsConfig.js"
-          IP=$(dig +short cdn-go.cn.cloud.tc.qq.com A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
 
-          CURL_ARGS=(-fsSL)
-          if [[ -n "$IP" ]]; then
-              CURL_ARGS+=(--resolve "cdn-go.cn:443:$IP")
-              echo "Using resolved IP: $IP"
-          fi
-          CONTENT=$(curl "${CURL_ARGS[@]}" "$CDN_URL")
+          # Fetch CDN config with multiple fallback strategies and proper timeouts
+          fetch_content() {
+              local url="$1"
+              local content
+
+              # Strategy 1: direct connection
+              if content=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 "$url" 2>/dev/null); then
+                  echo "Fetched via direct connection" >&2
+                  echo "$content"
+                  return 0
+              fi
+
+              # Strategy 2: resolve via cdn-go.cn.cloud.tc.qq.com and use --resolve
+              local ip
+              ip=$(dig +short cdn-go.cn.cloud.tc.qq.com A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+              if [[ -n "$ip" ]]; then
+                  echo "Trying resolved IP (cloud.tc.qq.com): $ip" >&2
+                  if content=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 --resolve "cdn-go.cn:443:$ip" "$url" 2>/dev/null); then
+                      echo "$content"
+                      return 0
+                  fi
+              fi
+
+              # Strategy 3: resolve cdn-go.cn directly
+              ip=$(dig +short cdn-go.cn A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+              if [[ -n "$ip" ]]; then
+                  echo "Trying resolved IP (direct DNS): $ip" >&2
+                  if content=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 --resolve "cdn-go.cn:443:$ip" "$url" 2>/dev/null); then
+                      echo "$content"
+                      return 0
+                  fi
+              fi
+
+              return 1
+          }
+
+          CONTENT=$(fetch_content "$CDN_URL") || {
+              echo "::error::Failed to fetch CDN config from $CDN_URL (all strategies failed)"
+              exit 1
+          }
 
           JSON_STR=$(echo "$CONTENT" | sed -n 's/.*var params\s*=\s*\({.*}\)\s*;.*/\1/p')
           if [[ -z "$JSON_STR" ]]; then
