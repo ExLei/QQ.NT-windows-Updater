@@ -35,13 +35,26 @@ jobs:
           CDN_URL="https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/windowsConfig.js"
 
           # Robust DNS resolution using Tencent DNS (119.29.29.29) for Chinese CDN domains
+          resolve_cdn() {
+            local ip
+
+            # Strategy 1: dig with Tencent DNS (cleanest output)
+            ip=$(dig +short cdn-go.cn @119.29.29.29 A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            if [[ -n "$ip" ]]; then echo "$ip"; return 0; fi
+
+            # Strategy 2: nslookup with Tencent DNS, skip DNS server's own address line
+            ip=$(nslookup cdn-go.cn 119.29.29.29 2>/dev/null | grep -E '^Address:' | grep -v '#53' | head -1 | awk '{print $2}')
+            if [[ -n "$ip" ]]; then echo "$ip"; return 0; fi
+
+            # Strategy 3: nslookup with grep -A 2 (Ubuntu format has Name line between)
+            ip=$(nslookup cdn-go.cn 119.29.29.29 2>/dev/null | grep -A 2 "Non-authoritative answer" | grep "Address" | head -1 | awk '{print $2}')
+            if [[ -n "$ip" ]]; then echo "$ip"; return 0; fi
+
+            return 1
+          }
+
           echo "Resolving cdn-go.cn via Tencent DNS (119.29.29.29)..."
-          CDN_IP=$(nslookup cdn-go.cn 119.29.29.29 2>/dev/null | grep -A 1 "Non-authoritative answer" | grep "Address" | head -n 1 | awk '{print $2}')
-          if [[ -z "$CDN_IP" ]]; then
-            echo "::warning::nslookup via Tencent DNS failed, trying dig fallback..."
-            CDN_IP=$(dig +short cdn-go.cn @119.29.29.29 A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-          fi
-          if [[ -z "$CDN_IP" ]]; then
+          if ! CDN_IP=$(resolve_cdn); then
             echo "::error::Failed to resolve cdn-go.cn via Tencent DNS"
             exit 1
           fi
