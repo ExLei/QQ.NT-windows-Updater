@@ -34,44 +34,25 @@ jobs:
 
           CDN_URL="https://cdn-go.cn/qq-web/im.qq.com_new/latest/rainbow/windowsConfig.js"
 
-          # Fetch CDN config with multiple fallback strategies and proper timeouts
-          fetch_content() {
-              local url="$1"
-              local content
+          # Robust DNS resolution using Tencent DNS (119.29.29.29) for Chinese CDN domains
+          echo "Resolving cdn-go.cn via Tencent DNS (119.29.29.29)..."
+          CDN_IP=$(nslookup cdn-go.cn 119.29.29.29 2>/dev/null | grep -A 1 "Non-authoritative answer" | grep "Address" | head -n 1 | awk '{print $2}')
+          if [[ -z "$CDN_IP" ]]; then
+            echo "::warning::nslookup via Tencent DNS failed, trying dig fallback..."
+            CDN_IP=$(dig +short cdn-go.cn @119.29.29.29 A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          fi
+          if [[ -z "$CDN_IP" ]]; then
+            echo "::error::Failed to resolve cdn-go.cn via Tencent DNS"
+            exit 1
+          fi
+          echo "Resolved cdn-go.cn: $CDN_IP"
+          echo "$CDN_IP cdn-go.cn" | sudo tee -a /etc/hosts
 
-              # Strategy 1: direct connection
-              if content=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 "$url" 2>/dev/null); then
-                  echo "Fetched via direct connection" >&2
-                  echo "$content"
-                  return 0
-              fi
-
-              # Strategy 2: resolve via cdn-go.cn.cloud.tc.qq.com and use --resolve
-              local ip
-              ip=$(dig +short cdn-go.cn.cloud.tc.qq.com A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              if [[ -n "$ip" ]]; then
-                  echo "Trying resolved IP (cloud.tc.qq.com): $ip" >&2
-                  if content=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 --resolve "cdn-go.cn:443:$ip" "$url" 2>/dev/null); then
-                      echo "$content"
-                      return 0
-                  fi
-              fi
-
-              # Strategy 3: resolve cdn-go.cn directly
-              ip=$(dig +short cdn-go.cn A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-              if [[ -n "$ip" ]]; then
-                  echo "Trying resolved IP (direct DNS): $ip" >&2
-                  if content=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 2 --resolve "cdn-go.cn:443:$ip" "$url" 2>/dev/null); then
-                      echo "$content"
-                      return 0
-                  fi
-              fi
-
-              return 1
-          }
-
-          CONTENT=$(fetch_content "$CDN_URL") || {
-              echo "::error::Failed to fetch CDN config from $CDN_URL (all strategies failed)"
+          # Fetch CDN config with X-Forwarded-For hint for domestic routing and cache-busting
+          T=$(date +%s)
+          echo "Fetching $CDN_URL?t=$T ..."
+          CONTENT=$(curl -fsSL --connect-timeout 15 --max-time 60 --retry 3 -H "X-Forwarded-For: 183.60.209.130" "${CDN_URL}?t=${T}") || {
+              echo "::error::Failed to fetch CDN config from $CDN_URL"
               exit 1
           }
 
